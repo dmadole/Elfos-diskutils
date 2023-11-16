@@ -17,8 +17,8 @@
 
           ; Definition files
 
-          #include include/bios.inc
-          #include include/kernel.inc
+          #include ../include/bios.inc
+          #include ../include/kernel.inc
 
 
           ; Unpublished kernel vector points

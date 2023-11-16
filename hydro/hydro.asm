@@ -17,8 +17,8 @@
 
           ; Include kernal API entry points
 
-            #include include/bios.inc
-            #include include/kernel.inc
+            #include ../include/bios.inc
+            #include ../include/kernel.inc
 
 
           ; Define non-published API elements

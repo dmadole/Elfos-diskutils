@@ -1,8 +1,5 @@
 
-clone.bin: clone.asm include/bios.inc include/kernel.inc
-	asm02 -L -b clone.asm
+PROJECT=clone
 
-clean:
-	-rm -f clone.lst
-	-rm -f clone.bin
+include ../include/makefile.mk
 

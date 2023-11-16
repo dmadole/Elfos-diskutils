@@ -1,9 +1,5 @@
 
-sys.bin: sys.asm
-	asm02 -L -b sys.asm
-	rm -f sys.build
+PROJECT=sys
 
-clean:
-	rm -f sys.lst
-	rm -f sys.bin
+include ../include/makefile.mk
 
