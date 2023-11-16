@@ -13,3 +13,8 @@ There is a top-level makefile that will make all of these in one step, and also 
 
 <https://github.com/dmadole/lbradd>
 
+You will also need to add bios.inc and kernel.inc into the include directory. These can be obtained respectively from:
+
+https://github.com/rileym65/Elf-BIOS/blob/main/bios.inc
+https://github.com/rileym65/Elf-Elfos-Kernel/blob/main/kernel.inc
+
