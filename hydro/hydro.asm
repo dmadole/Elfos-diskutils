@@ -55,6 +55,8 @@ d_idewrite: equ   044ah
 #define IDE_R_HEAD   06h
 #define IDE_R_STAT   07h
 #define IDE_R_CMND   07h
+#define IDE_R_DCTRL  0eh
+#define IDE_R_DADDR  0fh
 
 
             ; Bits in IDE status register
@@ -99,10 +101,10 @@ start:      br    entry
 
           ; Build information
 
-            db    11+80h                ; month
-            db    2                     ; day
-            dw    2023                  ; year
-            dw    10                    ; build
+            db    2+80h                 ; month
+            db    28                    ; day
+            dw    2024                  ; year
+            dw    11                    ; build
 
             db    'See github.com/dmadole/Elfos-hydro for more info',0
 
@@ -113,7 +115,7 @@ start:      br    entry
 
 entry:      sep   scall
             dw    o_inmsg
-            db    'Hydro IDE Disk Driver Build 10 for Elf/OS',13,10,0
+            db    'Hydro IDE Disk Driver Build 11 for Elf/OS',13,10,0
 
 
           ; Check minimum needed kernel version 0.4.0 in order to have
@@ -247,10 +249,34 @@ testsec:    phi   rf                    ; set message pointer to null
             str   r2
             out   EXP_PORT
  
+          ; We can quickly detect if there is no drive by outputing a zero
+          ; to the drive control register and seeing if a zero reads back.
+          ;
+          ; On the 1802/Mini with no master drive, it will because the bus is
+          ; buffered and the zero will be held by capacitance.
+          ;
+          ; For the slave drive on any machine, it will because the master
+          ; outputs zero if the slave is selected but none is present.
 
-nogroup:    ldi   -1                    ; timeout of 2 seconds
+nogroup:    ldi   240                   ; set timeout of approx 4 seconds
             phi   rd
-            plo   rd
+
+            sex   r3                    ; select the drive control register
+            out   IDE_SELECT
+            db    IDE_R_DCTRL
+
+            sex   r2                    ; if busy not set, select drive
+            inp   IDE_DATA
+            ani   IDE_S_BUSY
+            lbz   disksel
+
+            ldi   0                     ; if busy is set, output a zero
+            dec   r2
+            str   r2
+            out   IDE_DATA
+
+            inp   IDE_DATA              ; if reads back zero now, no drive
+            lbz   nodrive
 
             sep   scall                 ; wait until controller is ready
             dw    waitbsy
@@ -260,7 +286,7 @@ nogroup:    ldi   -1                    ; timeout of 2 seconds
           ; Now that we have confirmed busy is clear, it's ok to access
           ; other registers, so we select the drive and check for ready.
 
-            sex   r3                    ; select lba mode and drive
+disksel:    sex   r3                    ; select lba mode and drive
             out   IDE_SELECT
             db    IDE_R_HEAD
 
@@ -273,6 +299,19 @@ nogroup:    ldi   -1                    ; timeout of 2 seconds
             lsz                         ; oetherwise select slave drive
             out   IDE_DATA
             db    IDE_H_LBA+IDE_H_DR1
+
+            sex   r3                    ; select the drive control register
+            out   IDE_SELECT
+            db    IDE_R_DCTRL
+
+            ldi   0                     ; output a zero
+            dec   r2
+            str   r2
+            sex   r2
+            out   IDE_DATA
+
+            inp   IDE_DATA              ; no drive if it reads back zero
+            lbz   nodrive
 
             sep   scall                 ; wait until drive ready
             dw    waitrdy
@@ -658,8 +697,9 @@ notdisp:    ghi   r9                    ; stop looking once four drives
           ; the persistent code module. Make it permanent so it will
           ; not get cleaned up at program exit.
 
-loadmod:    phi   rc                    ; length of module in rc
-            ldi   modend.0
+loadmod:    ldi   (modend-module).1     ; length of module in rc
+            phi   rc
+            ldi   (modend-module).0
             plo   rc
 
             ldi   255                   ; page-aligned
