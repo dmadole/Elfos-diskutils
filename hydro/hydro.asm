@@ -115,7 +115,7 @@ start:      br    entry
 
 entry:      sep   scall
             dw    o_inmsg
-            db    'Hydro IDE Disk Driver Build 11 for Elf/OS',13,10,0
+            db    'Hydro IDE Disk Driver Build 12 for Elf/OS',13,10,0
 
 
           ; Check minimum needed kernel version 0.4.0 in order to have
@@ -378,14 +378,12 @@ disksel:    sex   r3                    ; select lba mode and drive
 
           ; Test if DMA works by trying a DMAIN and seeing if R0 changes.
 
-            ldi   sectdma.1
+            ldi   sectdma.1             ; pointer to dma id string
             phi   ra
             ldi   sectdma.0
             plo   ra
 
-            sex   r3                    ; set one sector to transfer
-
-            glo   r9
+            glo   r9                    ; dont test dma if disabled
             ani   128
             lbnz  dontdma
 
@@ -394,6 +392,7 @@ disksel:    sex   r3                    ; select lba mode and drive
             ldi   buffer.0
             plo   r0
 
+            sex   r3                    ; set one sector to transfer
             out   IDE_SELECT
             db    IDE_A_COUNT+1
 
@@ -410,7 +409,8 @@ disksel:    sex   r3                    ; select lba mode and drive
 
           ; If DMA did not work then copy the identity data using PIO.
 
-dontdma:    out   IDE_SELECT            ; enable dma in of data
+dontdma:    sex   r3                    ; enable dma in of data
+            out   IDE_SELECT
             db    IDE_R_DATA
 
             ldi   buffer.1              ; setup dma buffer pointer
