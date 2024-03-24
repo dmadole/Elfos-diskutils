@@ -101,10 +101,10 @@ start:      br    entry
 
           ; Build information
 
-            db    2+80h                 ; month
-            db    28                    ; day
+            db    3+80h                 ; month
+            db    24                    ; day
             dw    2024                  ; year
-            dw    11                    ; build
+            dw    12                    ; build
 
             db    'See github.com/dmadole/Elfos-hydro for more info',0
 
@@ -154,6 +154,9 @@ getopts:    ldi   groups.1              ; pointer to table of groups
             ldi   groups.0
             plo   r8
 
+            ldi   0
+            plo   r9
+
             ghi   ra                    ; move arguments pointer to rf
             phi   rf
             glo   ra
@@ -171,7 +174,15 @@ skipsp1:    lda   rf                    ; skip any leading spaces
             smi   'g'
             lbz   skipsp2
 
-            smi   's'-'g'               ; if not an s then error
+            smi   'd'-'g'               ; if a d disable dma
+            lbnz  nodmaop
+
+            ldi   128
+            plo   r9
+
+            lbr   skipsp1
+
+nodmaop:    smi   's'-'d'               ; if not an s then error
             lbnz  dousage
 
             glo   r8                    ; treat like g if not first
@@ -215,7 +226,7 @@ dogroup:    sep   scall                 ; get number
 
 dousage:    sep   scall                 ; error if bad syntax
             dw    o_inmsg
-            db    'USAGE: hydro [-g|-s group[,group...]] ...',13,10,0
+            db    'USAGE: hydro [-d] [-g|-s group[,group...]] ...',13,10,0
 
             sep   sret
 
@@ -237,7 +248,8 @@ testdrv:    ldi   groups.1              ; get pointer to groups table
             ldi   0                     ; initialize drive number
             phi   r9
 
-testpri:    ldi   0                     ; initialize master/slave flag
+testpri:    glo   r9                    ; initialize master/slave flag
+            ani   128
             plo   r9
 
 testsec:    phi   rf                    ; set message pointer to null
@@ -291,6 +303,7 @@ disksel:    sex   r3                    ; select lba mode and drive
             db    IDE_R_HEAD
 
             glo   r9                    ; get master or slave drive
+            ani   1
 
             lsnz                        ; if zero select master drive
             out   IDE_DATA
@@ -370,12 +383,17 @@ disksel:    sex   r3                    ; select lba mode and drive
             ldi   sectdma.0
             plo   ra
 
+            sex   r3                    ; set one sector to transfer
+
+            glo   r9
+            ani   128
+            lbnz  dontdma
+
             ldi   buffer.1              ; setup dma buffer pointer
             phi   r0
             ldi   buffer.0
             plo   r0
 
-            sex   r3                    ; set one sector to transfer
             out   IDE_SELECT
             db    IDE_A_COUNT+1
 
@@ -392,29 +410,41 @@ disksel:    sex   r3                    ; select lba mode and drive
 
           ; If DMA did not work then copy the identity data using PIO.
 
-            ldi   fastpio.1
+dontdma:    out   IDE_SELECT            ; enable dma in of data
+            db    IDE_R_DATA
+
+            ldi   buffer.1              ; setup dma buffer pointer
             phi   ra
-            ldi   fastpio.0
+            ldi   buffer.0
             plo   ra
 
             ldi   0                     ; 512 loops unrolled by 2 is 256
             plo   rc
 
-            sex   r0                    ; r0 is already set so use it
+            sex   ra                    ; r0 is already set so use it
 
 piocopy:    inp   IDE_DATA              ; input two bytes per loop
-            inc   r0
+            inc   ra
             inp   IDE_DATA
-            inc   r0
+            inc   ra
 
             dec   rc                    ; copy until all complete
             glo   rc
             lbnz  piocopy
 
+            ldi   fastpio.1
+            phi   ra
+            ldi   fastpio.0
+            plo   ra
+
+            ldi   1
 
           ; Patch BIOS to point to normal DMA disk routines
 
-withdma:    sep   scall                 ; wait for busy clear and rdy set
+withdma:    sdi   2
+            str   r7
+
+            sep   scall                 ; wait for busy clear and rdy set
             dw    waitrdy
             lbdf  nodrive
 
@@ -633,11 +663,14 @@ cpystr4:    lda   ra                    ; copy cr, lf and terminator
           ; the drive bit, as well as the port group selector. The driver
           ; later references this table to map drive numbers to hardware.
 
+            inc   r7                    ; skip type
+
             ldn   r8                    ; copy group into table
             str   r7
             inc   r7
 
             glo   r9                    ; copy head register to table
+            ani   1
 
             lsz                         ; drive 1 selector if non-zero
             ldi   IDE_H_LBA+IDE_H_DR1
@@ -652,7 +685,10 @@ cpystr4:    lda   ra                    ; copy cr, lf and terminator
           ; We now have either found a drive and it's description in pointed
           ; to by RF or we didn't find one and the high byte of RF is null.
 
-nodrive:    ldn   r8                    ; if default group then don't reset
+nodrive:    ldi   0
+            str   r7
+
+            ldn   r8                    ; if default group then don't reset
             lbz   dispdrv
 
             sex   r3                    ; else reset back to default group
@@ -676,6 +712,7 @@ notdisp:    ghi   r9                    ; stop looking once four drives
 
             glo   r9                    ; if drive zero, make one and test
             inc   r9
+            ani   1
             lbz   testsec
 
             inc   r8                    ; check next group if not last one
@@ -865,34 +902,30 @@ ideread:    glo   r3                    ; subroutine to setup command
             glo   r3                    ; subroutine to setup data transfer
             br    prexfer
 
+            bdf   pioread              ; if type not dma then do pio
+
+
           ; On systems that are overclocked or have slow busses, the end of
           ; the DMA operation may lag by a cycle, causing 513 bytes to be
           ; transferred instead of 512. This causes the byte following the
           ; buffer to be overwritten, so we save that byte first, then check
-          ; for that condition and restore the byte if needed.
+          ; for an overrun condition and restore the byte if needed.
 
-            ldn   rf                    ; get byte just past buffer
+            ldn   rf                    ; save byte just past buffer
+            plo   re
 
             out   IDE_SELECT            ; start dma input operation
             db    IDE_A_DMAIN+IDE_R_DATA
 
-          ; The following instruction is here instead of above because an
-          ; extra instruction delay may be needed before DMA actually starts
-          ; due to where in the machine cycle DMAIN is sampled.
-
-            plo   re                    ; save byte just past buffer
+            glo   rf                    ; what end address is supposed to be
             sex   r2
-            ghi   r0                    ; if dma did not happen then do pio
-            sm
-            bnz   pioread
-
-            glo   rf                    ; if end address is right then done
             str   r2
-            glo   r0
-            sm
+
+            glo   r0                    ; if address is right then all done
+            xor 
             bz    restret
 
-            glo   re                    ; else fix overrun byte then done
+            glo   re                    ; else, fix overrun byte then done
             str   rf
             br    restret
 
@@ -901,26 +934,29 @@ ideread:    glo   r3                    ; subroutine to setup command
            ; by a factor of 8 to reduce loop overhead and increase speed by
            ; by over 2x the Pico/Elf BIOS driver speed.
 
-pioread:    ldi   512/8               ; count for number of loops
+pioread:    out   IDE_SELECT
+            db    IDE_R_DATA
+
+            ldi   512/8               ; count for number of loops
             plo   re                  ; loop in unrolled by factor of 8
 
-            sex   r0
+            sex   rf
 rdloop:     inp   IDE_DATA            ; input bytes from data port into
-            inc   r0                  ; buffer and increment pointer
+            inc   rf                  ; buffer and increment pointer
             inp   IDE_DATA
-            inc   r0
+            inc   rf
             inp   IDE_DATA
-            inc   r0
+            inc   rf
             inp   IDE_DATA
-            inc   r0
+            inc   rf
             inp   IDE_DATA
-            inc   r0
+            inc   rf
             inp   IDE_DATA
-            inc   r0
+            inc   rf
             inp   IDE_DATA
-            inc   r0
+            inc   rf
             inp   IDE_DATA
-            inc   r0
+            inc   rf
 
             dec   re                    ; loop until all transferred
             glo   re
@@ -943,23 +979,28 @@ idewrite:   glo   r3                    ; subroutine to setup command
             glo   r3                    ; subroutine to setup data transfer
             br    prexfer
 
+            bdf   piowrit               ; if type not dma then do pio
+
+
+          ; All that needs to be done for the DMA write now is trigger the
+          ; hardware to start the transfer, which will interrupt execution.
+
             out   IDE_SELECT            ; trigger dma out operation
             db    IDE_A_DMOUT+IDE_R_DATA
 
-            sex   r2                    ; additional delay needed for dma
-            sex   r2
+            br    restret
 
-            ghi   r0                    ; if data transferred then done
-            sm
-            bz    restret
 
-          ; If the DMA did not happen then we will do the data transfer by
-          ; regular port I/O. The loop is unrolled by a factor of eight to
-          ; speed things up a bit, about three times Pico/Elf BIOS speed.
+          ; If it is not a DMA drive, then do the data transfer by regular
+          ; port I/O. The loop is unrolled by a factor of eight to speed
+          ; things up a bit, about three times Pico/Elf BIOS speed.
+
+piowrit:    out   IDE_SELECT
+            db    IDE_R_DATA
 
             ldi   512/8                 ; loop is unrolled by factor of 8
 
-            sex   r0
+            sex   rf
 wrtloop:    out   IDE_DATA              ; output bytes to data port
             out   IDE_DATA              ; pointer will auto increment
             out   IDE_DATA
@@ -984,15 +1025,20 @@ restret:    sex   r3                    ; select status register
             inp   IDE_DATA              ; move err flag into df to return
 iserror:    shr
 
-            inc   r2                    ; reset group if one was set
-            ldn   r2
+            ldn   r9                    ; reset group if one was set
             bz    return
 
             sex   r3                    ; put back to default group
             out   EXP_PORT
             db    NO_GROUP
 
-return:     sep   sret                  ; return to caller
+return:     inc   r2
+            lda   r2
+            phi   r9
+            ldn   r2
+            plo   r9
+
+            sep   sret                  ; return to caller
 
 
           ; Most of the controller interaction is the same whether its for
@@ -1002,36 +1048,36 @@ return:     sep   sret                  ; return to caller
 precmnd:    adi   2                     ; save return address
             plo   re
 
+            glo   r9
+            stxd
+            ghi   r9
+            stxd
+
             ghi   r8                    ; error if drive 4 or higher
             ani   31
             smi   4
             bdf   return
 
-          ; We use R0 as a scratch register without saving it since we are
-          ; going to change it later anyway and it's a deiscated DMA pointer.
-          ; But note that LDN R0 is not a legal instruction so LDA instead.
+            str   r2                    ; multiply drive number by three
+            shl
+            add
 
-            shl                         ; get pointer into disk table
-            adi   9+drivtbl.0           ; note that this sets df
-            plo   r0
+            adi   12+drivtbl.0          ; index into table, this sets df
+            plo   r9
             ghi   r3
-            phi   r0
+            phi   r9
 
-            lda   r0                    ; error if head register is zero
+            lda   r9                    ; not present if type is zero
             bz    return
 
-            dec   r0                    ; get group port number
-            dec   r0
-            lda   r0
+            lda   r9                    ; if group is zero do not set
+            bz    skipgrp
 
-            stxd                        ; save for later and for now
-            str   r2
-
-            lsz                         ; select group if not zero
+            dec   r9                    ; else set the port group
+            sex   r9
             out   EXP_PORT
-            dec   r2
 
-            sex   r3                    ; select status register
+skipgrp:    sex   r3                    ; select status register
             out   IDE_SELECT
             db    IDE_R_STAT
 
@@ -1043,7 +1089,7 @@ loopdr1:    inp   IDE_DATA              ; wait until drive not busy
             sex   r3
             out   IDE_SELECT            ; select head register
             db    IDE_R_HEAD
-            sex   r0
+            sex   r9
             out   IDE_DATA
 
             sex   r3
@@ -1090,6 +1136,10 @@ loopdr2:    inp   IDE_DATA              ; wait until drive ready
             out   IDE_SELECT            ; execute read or write command
             db    IDE_R_CMND
 
+            dec   r9                    ; point back to drive type
+            dec   r9
+            dec   r9
+
             glo   re                    ; return to ideread or idewrite
             plo   r3
 
@@ -1101,6 +1151,9 @@ loopdr2:    inp   IDE_DATA              ; wait until drive ready
 prexfer:    adi   2                     ; save return address
             plo   re
 
+            lda   r9                    ; set df if disk type is dma
+            sdi   1
+
             sex   r2
 loopdr3:    inp   IDE_DATA              ; wait until drive not busy
             ani   IDE_S_BUSY
@@ -1110,20 +1163,22 @@ loopdr3:    inp   IDE_DATA              ; wait until drive not busy
             ani   IDE_S_ERR
             bnz   iserror
 
-            glo   rf                    ; set dma pointer to buffer
-            plo   r0
-            ghi   rf
-            phi   r0
+            sex   r3
+            bdf   preretn               ; if type not dma then do pio
 
-            adi   2                     ; advance and save for dma check
+            glo   rf
+            plo   r0
+
+            ghi   rf                    ; set dma pointer, advance buffer
+            phi   r0
+            adi   2
             phi   rf
-            str   r2
 
             sex   r3                    ; set dma count to one sector
             out   IDE_SELECT
             db    IDE_A_COUNT+1
 
-            glo   re                    ; return to ideread or idewrite
+preretn:    glo   re                    ; return to ideread or idewrite
             plo   r3
 
 
@@ -1131,10 +1186,10 @@ loopdr3:    inp   IDE_DATA              ; wait until drive not busy
           ; each, we store the port group selector, or zero if none, and
           ; the head register value, which selects master or slave.
 
-drivtbl:    db    0,0
-            db    0,0
-            db    0,0
-            db    0,0
+drivtbl:    db    0,0,0
+            db    0,0,0
+            db    0,0,0
+            db    0,0,0
 
           ; The minfo command will look at the top of a heap block for a
           ; name if the 64 flag is set on the block, so here is a name. It
